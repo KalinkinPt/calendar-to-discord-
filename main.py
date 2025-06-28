@@ -4,20 +4,22 @@ import datetime
 import requests
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
-# Разрешения только на чтение календаря
+# 🔐 SCOPES: только чтение календаря
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 
-# Восстановление credentials.json из переменной среды
+# ✅ Восстановить credentials.json из переменной Railway
 if not os.path.exists("credentials.json"):
     creds_data = os.environ.get("CREDENTIALS_JSON")
     if creds_data:
         with open("credentials.json", "w") as f:
             f.write(creds_data)
+    else:
+        raise Exception("❗️Переменная окружения CREDENTIALS_JSON не найдена.")
 
-# Авторизация Google Calendar
+# 🔑 Авторизация Google Calendar
 def get_calendar_service():
     creds = None
     if os.path.exists('token.json'):
@@ -32,13 +34,17 @@ def get_calendar_service():
             token.write(creds.to_json())
     return build('calendar', 'v3', credentials=creds)
 
-# Отправка сообщений в Discord
+# 🔔 Отправка сообщения в Discord
 def send_to_discord(message):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if webhook_url:
-        requests.post(webhook_url, json={"content": message})
+        response = requests.post(webhook_url, json={"content": message})
+        if response.status_code != 204:
+            print("❗ Ошибка отправки в Discord:", response.status_code)
+    else:
+        print("❗ Переменная DISCORD_WEBHOOK_URL не найдена")
 
-# Проверка событий в ближайшие 60 минут
+# 📅 Проверка ближайших событий
 def check_upcoming_events():
     service = get_calendar_service()
     now = datetime.datetime.utcnow()
@@ -56,7 +62,7 @@ def check_upcoming_events():
     events = events_result.get('items', [])
 
     if not events:
-        print('❗ Нет событий в ближайший час.')
+        print('ℹ️ Нет событий в ближайший час.')
         return
 
     for event in events:
@@ -65,7 +71,7 @@ def check_upcoming_events():
         message = f"📅 Событие: **{summary}**\n🕒 Время: {start}"
         send_to_discord(message)
 
-# Основной запуск
+# ▶️ Запуск
 if __name__ == '__main__':
     send_to_discord("✅ Бот запущен и работает.")
     check_upcoming_events()
