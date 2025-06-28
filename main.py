@@ -60,4 +60,9 @@ def check_upcoming_events():
         send_to_discord(message)
 
 if __name__ == '__main__':
+    send_to_discord("✅ Тестовое сообщение: бот подключен и работает!")
+    check_upcoming_events()
+
+
+if __name__ == '__main__':
     check_upcoming_events()
