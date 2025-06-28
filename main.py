@@ -7,49 +7,58 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# 🔐 SCOPES: только чтение календаря
+# 🔐 Scopes: только чтение
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 
-# ✅ Восстановить credentials.json из переменной Railway
+# ✅ Восстановить credentials.json из переменной среды
 if not os.path.exists("credentials.json"):
     creds_data = os.environ.get("CREDENTIALS_JSON")
     if creds_data:
         with open("credentials.json", "w") as f:
             f.write(creds_data)
     else:
-        raise Exception("❗️Переменная окружения CREDENTIALS_JSON не найдена.")
+        raise Exception("❗️Переменная CREDENTIALS_JSON не найдена")
 
-# 🔑 Авторизация Google Calendar
+# 🔑 Получить Google Calendar сервис
 def get_calendar_service():
     creds = None
     if os.path.exists('token.json'):
         creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+            auth_url, _ = flow.authorization_url(prompt='consent')
+
+            print("\n🔗 Перейди по этой ссылке для авторизации:\n", auth_url)
+            code = input("👉 Вставь код авторизации: ")
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+
+            # Сохраняем токен
+            with open('token.json', 'w') as token:
+                token.write(creds.to_json())
+
     return build('calendar', 'v3', credentials=creds)
 
-# 🔔 Отправка сообщения в Discord
+# 📣 Отправка в Discord
 def send_to_discord(message):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if webhook_url:
         response = requests.post(webhook_url, json={"content": message})
         if response.status_code != 204:
-            print("❗ Ошибка отправки в Discord:", response.status_code)
+            print("❗ Ошибка при отправке в Discord:", response.text)
     else:
-        print("❗ Переменная DISCORD_WEBHOOK_URL не найдена")
+        print("❗ DISCORD_WEBHOOK_URL не установлена")
 
-# 📅 Проверка ближайших событий
+# 📅 Поиск ближайших событий
 def check_upcoming_events():
     service = get_calendar_service()
     now = datetime.datetime.utcnow()
     now_iso = now.isoformat() + 'Z'
-    future = (now + datetime.timedelta(minutes=60)).isoformat() + 'Z'
+    future = (now + datetime.timedelta(hours=1)).isoformat() + 'Z'
 
     events_result = service.events().list(
         calendarId='primary',
@@ -62,7 +71,7 @@ def check_upcoming_events():
     events = events_result.get('items', [])
 
     if not events:
-        print('ℹ️ Нет событий в ближайший час.')
+        print("ℹ️ Нет событий в ближайший час.")
         return
 
     for event in events:
@@ -71,7 +80,7 @@ def check_upcoming_events():
         message = f"📅 Событие: **{summary}**\n🕒 Время: {start}"
         send_to_discord(message)
 
-# ▶️ Запуск
+# ▶️ Старт
 if __name__ == '__main__':
     send_to_discord("✅ Бот запущен и работает.")
     check_upcoming_events()
