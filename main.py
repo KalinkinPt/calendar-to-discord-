@@ -1,61 +1,76 @@
 import os
 import json
-import requests
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+import requests
 
 # Проверка переменных окружения
 if not all(key in os.environ for key in ["CREDENTIALS_JSON", "TOKEN_JSON", "DISCORD_WEBHOOK_URL"]):
     raise Exception("❗️Отсутствует одна из переменных окружения: CREDENTIALS_JSON, TOKEN_JSON или DISCORD_WEBHOOK_URL")
 
-# Загрузка переменных
-credentials_json = json.loads(os.environ["CREDENTIALS_JSON"])
-token_json = json.loads(os.environ["TOKEN_JSON"])
-webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
+# Инициализация переменных
+CREDENTIALS_JSON = json.loads(os.environ["CREDENTIALS_JSON"])
+TOKEN_JSON = json.loads(os.environ["TOKEN_JSON"])
+DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
-# Авторизация
-creds = Credentials.from_authorized_user_info(info=token_json)
+# Хранилище отправленных событий
+sent_event_ids = set()
 
-# Получаем сервис Google Calendar
-service = build("calendar", "v3", credentials=creds)
+# Функция получения сервиса календаря
+def get_calendar_service():
+    creds = Credentials.from_authorized_user_info(TOKEN_JSON, ["https://www.googleapis.com/auth/calendar.readonly"])
+    return build("calendar", "v3", credentials=creds)
 
+# Функция проверки событий
 def check_upcoming_events():
-    print("📅 Получение списка календарей...")
-    calendar_list = service.calendarList().list().execute()
-    for calendar in calendar_list["items"]:
-        print(f"- {calendar['summary']} (ID: {calendar['id']})")
+    print("\n📅 Проверка новых событий...")
+    service = get_calendar_service()
 
-    # Используется основной календарь — замени, если нужно
-    calendar_id = "primary"
+    now = datetime.now(timezone.utc).isoformat()
+    end_time = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
 
-    now = datetime.utcnow().isoformat() + "Z"
-    end_time = (datetime.utcnow() + timedelta(hours=12)).isoformat() + "Z"
-
-    print(f"\n🔍 Поиск событий с {now} по {end_time} в календаре: {calendar_id}")
-
+    calendar_id = 'primary'  # можно заменить на конкретный ID
     events_result = service.events().list(
         calendarId=calendar_id,
         timeMin=now,
         timeMax=end_time,
         singleEvents=True,
-        orderBy="startTime"
+        orderBy='startTime'
     ).execute()
 
-    events = events_result.get("items", [])
+    events = events_result.get('items', [])
 
     if not events:
-        print("⛔️ Нет событий.")
+        print("Нет новых событий.")
         return
 
     for event in events:
-        start = event["start"].get("dateTime", event["start"].get("date"))
-        summary = event.get("summary", "Без названия")
-        event_time = datetime.fromisoformat(start.replace("Z", "+00:00")).strftime("%H:%M %d.%m.%Y")
+        event_id = event.get('id')
+        if event_id in sent_event_ids:
+            continue
 
-        message = f"📌 **{summary}**\n🕒 {event_time}"
-        print(f"📤 Отправка в Discord: {message}")
-        requests.post(webhook_url, json={"content": message})
+        summary = event.get('summary', 'Без названия')
+        start = event['start'].get('dateTime', event['start'].get('date'))
 
-# Запуск
-check_upcoming_events()
+        dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        formatted_time = dt.strftime("%H:%M %d.%m.%Y")
+
+        message = f"\n📤 Отправка в Discord: \U0001F4CC **{summary}**\n\n\U0001F552 {formatted_time}"
+        print(message)
+
+        try:
+            requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
+            sent_event_ids.add(event_id)
+        except Exception as e:
+            print(f"❌ Ошибка отправки в Discord: {e}")
+
+# Бесконечный цикл с проверкой каждую минуту
+if __name__ == "__main__":
+    while True:
+        try:
+            check_upcoming_events()
+        except Exception as e:
+            print(f"❗️Ошибка: {e}")
+        time.sleep(60)
