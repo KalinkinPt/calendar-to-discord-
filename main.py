@@ -1,57 +1,61 @@
 import os
 import json
-import base64
 import requests
 from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# Получаем переменные окружения
-CREDENTIALS_JSON = os.environ.get("CREDENTIALS_JSON")
-TOKEN_JSON = os.environ.get("TOKEN_JSON")
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-
-if not CREDENTIALS_JSON or not TOKEN_JSON or not DISCORD_WEBHOOK_URL:
+# Проверка переменных окружения
+if not all(key in os.environ for key in ["CREDENTIALS_JSON", "TOKEN_JSON", "DISCORD_WEBHOOK_URL"]):
     raise Exception("❗️Отсутствует одна из переменных окружения: CREDENTIALS_JSON, TOKEN_JSON или DISCORD_WEBHOOK_URL")
 
-# Загружаем учётные данные
-creds = Credentials.from_authorized_user_info(json.loads(TOKEN_JSON))
+# Загрузка переменных
+credentials_json = json.loads(os.environ["CREDENTIALS_JSON"])
+token_json = json.loads(os.environ["TOKEN_JSON"])
+webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
 
-# Получаем сервис календаря
-service = build('calendar', 'v3', credentials=creds)
+# Авторизация
+creds = Credentials.from_authorized_user_info(info=token_json)
 
-def get_upcoming_events():
-    now = datetime.utcnow().isoformat() + 'Z'
-    end_time = (datetime.utcnow() + timedelta(hours=12)).isoformat() + 'Z'
+# Получаем сервис Google Calendar
+service = build("calendar", "v3", credentials=creds)
+
+def check_upcoming_events():
+    print("📅 Получение списка календарей...")
+    calendar_list = service.calendarList().list().execute()
+    for calendar in calendar_list["items"]:
+        print(f"- {calendar['summary']} (ID: {calendar['id']})")
+
+    # Используется основной календарь — замени, если нужно
+    calendar_id = "primary"
+
+    now = datetime.utcnow().isoformat() + "Z"
+    end_time = (datetime.utcnow() + timedelta(hours=12)).isoformat() + "Z"
+
+    print(f"\n🔍 Поиск событий с {now} по {end_time} в календаре: {calendar_id}")
 
     events_result = service.events().list(
-        calendarId='primary',
+        calendarId=calendar_id,
         timeMin=now,
         timeMax=end_time,
-        maxResults=5,
         singleEvents=True,
-        orderBy='startTime'
+        orderBy="startTime"
     ).execute()
 
-    return events_result.get('items', [])
+    events = events_result.get("items", [])
 
-def send_to_discord(events):
     if not events:
-        print("Нет событий.")
+        print("⛔️ Нет событий.")
         return
 
     for event in events:
-        start = event['start'].get('dateTime', event['start'].get('date'))
-        summary = event.get('summary', 'Без названия')
-        message = f"📅 **{summary}**\n🕒 {start}"
-        payload = {'content': message}
+        start = event["start"].get("dateTime", event["start"].get("date"))
+        summary = event.get("summary", "Без названия")
+        event_time = datetime.fromisoformat(start.replace("Z", "+00:00")).strftime("%H:%M %d.%m.%Y")
 
-        r = requests.post(DISCORD_WEBHOOK_URL, json=payload)
-        if r.status_code == 204:
-            print(f"✅ Уведомление отправлено: {summary}")
-        else:
-            print(f"❌ Ошибка отправки: {r.status_code}")
+        message = f"📌 **{summary}**\n🕒 {event_time}"
+        print(f"📤 Отправка в Discord: {message}")
+        requests.post(webhook_url, json={"content": message})
 
-if __name__ == "__main__":
-    events = get_upcoming_events()
-    send_to_discord(events)
+# Запуск
+check_upcoming_events()
