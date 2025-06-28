@@ -1,86 +1,57 @@
 import os
 import json
-import datetime
+import base64
 import requests
-from google.auth.transport.requests import Request
+from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# 🔐 Scopes: только чтение
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+# Получаем переменные окружения
+CREDENTIALS_JSON = os.environ.get("CREDENTIALS_JSON")
+TOKEN_JSON = os.environ.get("TOKEN_JSON")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-# ✅ Восстановить credentials.json из переменной среды
-if not os.path.exists("credentials.json"):
-    creds_data = os.environ.get("CREDENTIALS_JSON")
-    if creds_data:
-        with open("credentials.json", "w") as f:
-            f.write(creds_data)
-    else:
-        raise Exception("❗️Переменная CREDENTIALS_JSON не найдена")
+if not CREDENTIALS_JSON or not TOKEN_JSON or not DISCORD_WEBHOOK_URL:
+    raise Exception("❗️Отсутствует одна из переменных окружения: CREDENTIALS_JSON, TOKEN_JSON или DISCORD_WEBHOOK_URL")
 
-# 🔑 Получить Google Calendar сервис
-def get_calendar_service():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+# Загружаем учётные данные
+creds = Credentials.from_authorized_user_info(json.loads(TOKEN_JSON))
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            auth_url, _ = flow.authorization_url(prompt='consent')
+# Получаем сервис календаря
+service = build('calendar', 'v3', credentials=creds)
 
-            print("\n🔗 Перейди по этой ссылке для авторизации:\n", auth_url)
-            code = input("👉 Вставь код авторизации: ")
-            flow.fetch_token(code=code)
-            creds = flow.credentials
-
-            # Сохраняем токен
-            with open('token.json', 'w') as token:
-                token.write(creds.to_json())
-
-    return build('calendar', 'v3', credentials=creds)
-
-# 📣 Отправка в Discord
-def send_to_discord(message):
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
-    if webhook_url:
-        response = requests.post(webhook_url, json={"content": message})
-        if response.status_code != 204:
-            print("❗ Ошибка при отправке в Discord:", response.text)
-    else:
-        print("❗ DISCORD_WEBHOOK_URL не установлена")
-
-# 📅 Поиск ближайших событий
-def check_upcoming_events():
-    service = get_calendar_service()
-    now = datetime.datetime.utcnow()
-    now_iso = now.isoformat() + 'Z'
-    future = (now + datetime.timedelta(hours=1)).isoformat() + 'Z'
+def get_upcoming_events():
+    now = datetime.utcnow().isoformat() + 'Z'
+    end_time = (datetime.utcnow() + timedelta(hours=12)).isoformat() + 'Z'
 
     events_result = service.events().list(
         calendarId='primary',
-        timeMin=now_iso,
-        timeMax=future,
+        timeMin=now,
+        timeMax=end_time,
+        maxResults=5,
         singleEvents=True,
         orderBy='startTime'
     ).execute()
 
-    events = events_result.get('items', [])
+    return events_result.get('items', [])
 
+def send_to_discord(events):
     if not events:
-        print("ℹ️ Нет событий в ближайший час.")
+        print("Нет событий.")
         return
 
     for event in events:
-        summary = event.get('summary', 'Без названия')
         start = event['start'].get('dateTime', event['start'].get('date'))
-        message = f"📅 Событие: **{summary}**\n🕒 Время: {start}"
-        send_to_discord(message)
+        summary = event.get('summary', 'Без названия')
+        message = f"📅 **{summary}**\n🕒 {start}"
+        payload = {'content': message}
 
-# ▶️ Старт
-if __name__ == '__main__':
-    send_to_discord("✅ Бот запущен и работает.")
-    check_upcoming_events()
+        r = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+        if r.status_code == 204:
+            print(f"✅ Уведомление отправлено: {summary}")
+        else:
+            print(f"❌ Ошибка отправки: {r.status_code}")
+
+if __name__ == "__main__":
+    events = get_upcoming_events()
+    send_to_discord(events)
