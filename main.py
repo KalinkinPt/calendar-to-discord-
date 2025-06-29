@@ -38,7 +38,7 @@ def send_event_to_discord(event):
         "color": 0x3498db,
         "fields": [
             {"name": "🗓️ Дата", "value": date_str, "inline": True},
-            {"name": "🕒 Время", "value": time_str, "inline": True}
+            {"name": "🕒 Час", "value": time_str, "inline": True}
         ],
         "footer": {"text": "Google Calendar Bot"},
     }
