@@ -1,70 +1,149 @@
 import os
 import json
-import discord
-from discord.ext import tasks
-from google.oauth2 import service_account
+import requests
+from datetime import datetime, timedelta, timezone
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
+import pytz
 
-load_dotenv()
+# Проверка переменных окружения
+if not all([os.getenv("CREDENTIALS_JSON"), os.getenv("TOKEN_JSON"), os.getenv("DISCORD_WEBHOOK_URL")]):
+    raise Exception("❗️Отсутствует одна из переменных окружения: CREDENTIALS_JSON, TOKEN_JSON или DISCORD_WEBHOOK_URL")
 
-# Load credentials from Railway environment variable
-credentials_info = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
-credentials = service_account.Credentials.from_service_account_info(
-    credentials_info,
-    scopes=["https://www.googleapis.com/auth/calendar.readonly"]
-)
+CREDENTIALS_JSON = json.loads(os.getenv("CREDENTIALS_JSON"))
+TOKEN_JSON = json.loads(os.getenv("TOKEN_JSON"))
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-calendar_id = os.getenv("GOOGLE_CALENDAR_ID")
-discord_token = os.getenv("DISCORD_BOT_TOKEN")
-channel_id = int(os.getenv("DISCORD_CHANNEL_ID"))
+# Читаем список уже отправленных ID событий
+sent_events_file = "sent_events.json"
+if os.path.exists(sent_events_file):
+    with open(sent_events_file, "r") as f:
+        sent_events = set(json.load(f))
+else:
+    sent_events = set()
 
-service = build("calendar", "v3", credentials=credentials)
-intents = discord.Intents.default()
-client = discord.Client(intents=intents)
+def get_calendar_service():
+    creds = Credentials.from_authorized_user_info(info=TOKEN_JSON, scopes=['https://www.googleapis.com/auth/calendar.readonly'])
+    return build('calendar', 'v3', credentials=creds)
 
-def get_todays_events():
-    now = datetime.utcnow().isoformat() + 'Z'
-    end = (datetime.utcnow() + timedelta(days=1)).isoformat() + 'Z'
+def send_event_to_discord(event):
+    title = event.get("summary", "Без названия")
+    start_time = event["start"].get("dateTime", event["start"].get("date"))
+    dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+    date_str = dt.strftime("%d.%m.%Y")
+    time_str = dt.strftime("%H:%M")
 
-    events_result = service.events().list(
-        calendarId=calendar_id,
-        timeMin=now,
-        timeMax=end,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
+    embed = {
+        "title": "📌 " + title,
+        "color": 0x3498db,
+        "fields": [
+            {"name": "🗓️ Дата", "value": date_str, "inline": True},
+            {"name": "🕒 Время", "value": time_str, "inline": True}
+        ],
+        "footer": {"text": "Google Calendar Bot"},
+    }
 
-    events = events_result.get('items', [])
+    payload = {
+        "username": "CalendarBot",
+        "embeds": [embed]
+    }
+    response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    if response.status_code != 204:
+        print("❌ Не отправлено:", response.text)
 
-    if not events:
-        return "Сьогодні немає запланованих подій."
+def check_upcoming_events():
+    print("📅 Получение списка календарей...")
+    service = get_calendar_service()
+    calendar_list = service.calendarList().list().execute()
 
-    message_lines = ["📅 Події на сьогодні:\n"]
-    for event in events:
-        start = event['start'].get('dateTime', event['start'].get('date'))
+    now = datetime.now(timezone.utc)
+    end_time = now + timedelta(hours=12)
+    time_min = now.isoformat()
+    time_max = end_time.isoformat()
+
+    for calendar in calendar_list['items']:
+        cal_id = calendar['id']
+        print(f"\n🔍 Проверка календаря: {calendar['summary']} ({cal_id})")
+        events_result = service.events().list(
+            calendarId=cal_id,
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+
+        events = events_result.get('items', [])
+        for event in events:
+            if event['id'] not in sent_events:
+                send_event_to_discord(event)
+                sent_events.add(event['id'])
+
+    with open(sent_events_file, "w") as f:
+        json.dump(list(sent_events), f)
+
+def send_daily_schedule():
+    print("📤 Отправка утреннего расписания...")
+    service = get_calendar_service()
+    calendar_list = service.calendarList().list().execute()
+
+    kyiv = pytz.timezone('Europe/Kyiv')
+    now_kyiv = datetime.now(kyiv)
+    start_of_day = datetime(now_kyiv.year, now_kyiv.month, now_kyiv.day, 0, 0, tzinfo=kyiv)
+    end_of_day = start_of_day + timedelta(days=1)
+
+    events_today = []
+    for calendar in calendar_list['items']:
+        events_result = service.events().list(
+            calendarId=calendar['id'],
+            timeMin=start_of_day.isoformat(),
+            timeMax=end_of_day.isoformat(),
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        events_today.extend(events_result.get('items', []))
+
+    events_today.sort(key=lambda e: e["start"].get("dateTime", e["start"].get("date")))
+    schedule_lines = []
+    for event in events_today:
+        title = event.get("summary", "Без названия")
+        start_time = event["start"].get("dateTime", event["start"].get("date"))
+        dt = datetime.fromisoformat(start_time.replace("Z", "+00:00")).astimezone(kyiv)
+        schedule_lines.append(f"**{dt.strftime('%H:%M')}** — {title}")
+
+    if schedule_lines:
+        payload = {
+            "username": "CalendarBot",
+            "embeds": [{
+                "title": "📅 Расписание на сегодня",
+                "description": "\n".join(schedule_lines),
+                "color": 0x2ecc71,
+                "footer": {"text": "Google Calendar Bot"},
+            }]
+        }
+        response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+        if response.status_code != 204:
+            print("❌ Ошибка отправки расписания:", response.text)
+        else:
+            print("✅ Утреннее сообщение успешно отправлено.")
+    else:
+        print("ℹ️ Сегодня нет событий для отправки.")
+
+# Основной цикл
+if __name__ == "__main__":
+    import time
+    last_daily_sent = None
+    print("✅ Bot started. ⏰ Каждую минуту проверка...")
+    while True:
         try:
-            time_part = datetime.fromisoformat(start).strftime("%H:%M")
-        except:
-            time_part = "🕘 Час не вказано"
-        summary = event.get('summary', 'Без назви')
-        message_lines.append(f"• {time_part} — {summary}")
-    return "\n".join(message_lines)
+            check_upcoming_events()
 
-@client.event
-async def on_ready():
-    print(f"Logged in as {client.user}")
-    send_daily_events.start()
+            kyiv = pytz.timezone('Europe/Kyiv')
+            now_kyiv = datetime.now(kyiv)
+            if now_kyiv.hour == 8 and (last_daily_sent != now_kyiv.date()):
+                send_daily_schedule()
+                last_daily_sent = now_kyiv.date()
 
-@tasks.loop(hours=24)
-async def send_daily_events():
-    now = datetime.utcnow()
-    if now.hour != 4:  # щоб відправляти рівно о 07:00 за GMT+3
-        return
-    channel = client.get_channel(channel_id)
-    if channel:
-        events_message = get_todays_events()
-        await channel.send(events_message)
+        except Exception as e:
+            print("❌ Ошибка:", e)
 
-client.run(discord_token)
+        time.sleep(60)
