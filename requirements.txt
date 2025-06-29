@@ -1,5 +1,5 @@
+python-dotenv
+discord.py
 google-api-python-client
 google-auth
 google-auth-oauthlib
-python-dotenv
-requests
