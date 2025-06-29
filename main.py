@@ -1,96 +1,74 @@
 import os
-import json
-import time
-import requests
-from datetime import datetime, timedelta
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-import unicodedata
+import gspread
+import discord
+import asyncio
+from datetime import datetime
+from discord import SyncWebhook, Embed
+from oauth2client.service_account import ServiceAccountCredentials
 
-# 🔧 Функция для удаления некорректных символов
-def sanitize(text):
-    return unicodedata.normalize("NFKD", text).encode("utf-8", "ignore").decode("utf-8")
+# --- Настройки ---
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+SHEET_NAME = os.getenv("SHEET_NAME", "Розклад")
+TIME_ZONE_OFFSET = 3  # для Киева UTC+3
 
-# 🔐 Получение переменных окружения
-CREDENTIALS_JSON = os.environ.get("CREDENTIALS_JSON")
-TOKEN_JSON = os.environ.get("TOKEN_JSON")
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+# --- Авторизация Google Sheets ---
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+credentials = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+gc = gspread.authorize(credentials)
 
-if not all([CREDENTIALS_JSON, TOKEN_JSON, DISCORD_WEBHOOK_URL]):
-    raise Exception("❗️Отсутствует одна из переменных окружения: CREDENTIALS_JSON, TOKEN_JSON или DISCORD_WEBHOOK_URL")
+# --- Загрузка таблицы ---
+sheet = gc.open_by_key(GOOGLE_SHEET_ID).worksheet(SHEET_NAME)
 
-# 📂 Сохранение токенов во временные файлы
-with open("credentials.json", "w", encoding="utf-8") as f:
-    f.write(CREDENTIALS_JSON)
+# --- Получение расписания на сегодня ---
+def get_today_schedule():
+    today = datetime.utcnow().timestamp() + TIME_ZONE_OFFSET * 3600
+    today_date = datetime.utcfromtimestamp(today).strftime("%d.%m.%Y")
 
-with open("token.json", "w", encoding="utf-8") as f:
-    f.write(TOKEN_JSON)
+    header_row = sheet.row_values(1)
+    day_cols = {name: idx for idx, name in enumerate(header_row) if today_date in name}
+    if not day_cols:
+        return f"❌ У таблиці немає розкладу на {today_date}", []
 
-# 📌 Хранилище ID уже отправленных событий
-sent_event_ids = set()
+    therapist_schedule = {}
+    time_slots = sheet.col_values(1)[2:]  # первый столбец — время
 
-def get_calendar_service():
-    creds = Credentials.from_authorized_user_file("token.json")
-    service = build("calendar", "v3", credentials=creds)
-    return service
+    for therapist, col_index in day_cols.items():
+        entries = sheet.col_values(col_index + 1)[2:]  # +1 потому что индексация с 0
+        pairs = [(t, e) for t, e in zip(time_slots, entries) if e.strip()]
+        if pairs:
+            therapist_name = therapist.replace(today_date, "").strip()
+            therapist_schedule[therapist_name] = pairs
 
-def send_to_discord(summary, start_time_fmt):
-    embed = {
-        "title": sanitize(f"📌 {summary}"),
-        "description": sanitize(f"🕒 {start_time_fmt}"),
-        "color": 0x00AEEF
-    }
+    return today_date, therapist_schedule
 
-    payload = {
-        "username": "CalendarBot",
-        "embeds": [embed]
-    }
+# --- Отправка сообщения в Discord ---
+def send_schedule_to_discord():
+    today_date, schedule = get_today_schedule()
+    webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
 
-    response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
-    if response.status_code != 204:
-        print(f"❌ Ошибка отправки в Discord: {response.status_code} — {response.text}")
+    if isinstance(schedule, str):
+        webhook.send(schedule)
+        return
 
-def check_upcoming_events():
-    print("🔄 Проверка событий...")
-    service = get_calendar_service()
+    embed = Embed(title=f"\ud83d\udcc5 Запис пацієнтів на {today_date}", color=0x3498db)
 
-    now = datetime.utcnow().isoformat() + "Z"
-    end_time = (datetime.utcnow() + timedelta(hours=12)).isoformat() + "Z"
+    for therapist, appointments in schedule.items():
+        text = "\n".join([f"- {t} — {n}" for t, n in appointments])
+        embed.add_field(name=f"\U0001f468‍⚕️ {therapist}", value=text, inline=False)
 
-    calendars = service.calendarList().list().execute().get("items", [])
+    webhook.send(embed=embed)
 
-    for calendar in calendars:
-        calendar_id = calendar["id"]
-        events_result = service.events().list(
-            calendarId=calendar_id,
-            timeMin=now,
-            timeMax=end_time,
-            singleEvents=True,
-            orderBy="startTime"
-        ).execute()
+# --- Запуск по расписанию ---
+async def run_daily():
+    while True:
+        now = datetime.utcnow()
+        if now.hour == 4 and now.minute == 0:  # 04:00 UTC == 07:00 Kyiv
+            send_schedule_to_discord()
+            await asyncio.sleep(60)
+        await asyncio.sleep(20)
 
-        events = events_result.get("items", [])
-        for event in events:
-            event_id = event["id"]
-            if event_id in sent_event_ids:
-                continue
-
-            start = event["start"].get("dateTime", event["start"].get("date"))
-            summary = event.get("summary", "Без названия")
-
-            try:
-                dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                start_time_fmt = dt.strftime("%H:%M %d.%m.%Y")
-            except Exception:
-                start_time_fmt = start
-
-            send_to_discord(summary, start_time_fmt)
-            sent_event_ids.add(event_id)
-
-print("✅ Bot started. 🕒 Каждую минуту проверка...")
-while True:
-    try:
-        check_upcoming_events()
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-    time.sleep(60)
+# --- Старт ---
+if __name__ == "__main__":
+    print("✅ Bot started. 🕒 Щохвилини перевірка на 07:00 Kyiv...")
+    asyncio.run(run_daily())
