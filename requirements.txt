@@ -1,6 +1,4 @@
-gspread
-oauth2client
-google-auth
+google-api-python-clientAdd commentMore actions
+google-auth-httplib2
+google-auth-oauthlib
 requests
-discord.py
-python-dotenv
