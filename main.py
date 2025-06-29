@@ -114,7 +114,7 @@ def send_daily_schedule():
         payload = {
             "username": "CalendarBot",
             "embeds": [{
-                "title": "📅 Расписание на сегодня",
+                "title": "📅 Розклад на сьогодні",
                 "description": "\n".join(schedule_lines),
                 "color": 0x2ecc71,
                 "footer": {"text": "Google Calendar Bot"},
