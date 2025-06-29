@@ -1,44 +1,70 @@
 import os
 import json
-import datetime
-import requests
+import discord
+from discord.ext import tasks
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Завантаження облікових даних
+# Load credentials from Railway environment variable
 credentials_info = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
 credentials = service_account.Credentials.from_service_account_info(
     credentials_info,
-    scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+    scopes=["https://www.googleapis.com/auth/calendar.readonly"]
 )
 
 calendar_id = os.getenv("GOOGLE_CALENDAR_ID")
-webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+discord_token = os.getenv("DISCORD_BOT_TOKEN")
+channel_id = int(os.getenv("DISCORD_CHANNEL_ID"))
 
 service = build("calendar", "v3", credentials=credentials)
-now = datetime.datetime.utcnow().isoformat() + "Z"
-end_of_day = (datetime.datetime.utcnow().replace(hour=23, minute=59, second=59)).isoformat() + "Z"
+intents = discord.Intents.default()
+client = discord.Client(intents=intents)
 
-events_result = service.events().list(
-    calendarId=calendar_id,
-    timeMin=now,
-    timeMax=end_of_day,
-    singleEvents=True,
-    orderBy="startTime"
-).execute()
-events = events_result.get("items", [])
+def get_todays_events():
+    now = datetime.utcnow().isoformat() + 'Z'
+    end = (datetime.utcnow() + timedelta(days=1)).isoformat() + 'Z'
 
-if not events:
-    message = "📅 Сьогодні немає запланованих подій."
-else:
-    message = "**Сьогоднішні події:**\n"
+    events_result = service.events().list(
+        calendarId=calendar_id,
+        timeMin=now,
+        timeMax=end,
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
+
+    events = events_result.get('items', [])
+
+    if not events:
+        return "Сьогодні немає запланованих подій."
+
+    message_lines = ["📅 Події на сьогодні:\n"]
     for event in events:
-        start = event["start"].get("dateTime", event["start"].get("date"))
-        start_time = datetime.datetime.fromisoformat(start).strftime("%H:%M")
-        summary = event.get("summary", "Без назви")
-        message += f"- `{start_time}` – {summary}\n"
+        start = event['start'].get('dateTime', event['start'].get('date'))
+        try:
+            time_part = datetime.fromisoformat(start).strftime("%H:%M")
+        except:
+            time_part = "🕘 Час не вказано"
+        summary = event.get('summary', 'Без назви')
+        message_lines.append(f"• {time_part} — {summary}")
+    return "\n".join(message_lines)
 
-requests.post(webhook_url, json={"content": message})
+@client.event
+async def on_ready():
+    print(f"Logged in as {client.user}")
+    send_daily_events.start()
+
+@tasks.loop(hours=24)
+async def send_daily_events():
+    now = datetime.utcnow()
+    if now.hour != 4:  # щоб відправляти рівно о 07:00 за GMT+3
+        return
+    channel = client.get_channel(channel_id)
+    if channel:
+        events_message = get_todays_events()
+        await channel.send(events_message)
+
+client.run(discord_token)
