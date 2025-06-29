@@ -1,4 +1,6 @@
-google-api-python-clientAdd commentMore actions
-google-auth-httplib2
+google-api-python-client
+google-auth
 google-auth-oauthlib
-requests
+google-auth-httplib2
+discord.py
+aiohttp
